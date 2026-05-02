@@ -49,8 +49,8 @@ jobs:
           git config --global init.defaultBranch main
           git init .
           git remote add origin \
-            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${{ GITHUB_REPOSITORY }}.git"
-          git fetch --depth=1 origin "${{ GITHUB_SHA }}"
+            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout FETCH_HEAD
 
       - name: hadolint
@@ -72,8 +72,8 @@ jobs:
           git config --global init.defaultBranch main
           git init .
           git remote add origin \
-            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${{ GITHUB_REPOSITORY }}.git"
-          git fetch --depth=1 origin "${{ GITHUB_SHA }}"
+            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout FETCH_HEAD
 
       - name: Build (amd64)
@@ -120,7 +120,7 @@ jobs:
             -H "Authorization: token ${FORGEJO_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "${PAYLOAD}" \
-            "https://git.mon.k8b.co/api/v1/repos/${{ GITHUB_REPOSITORY }}/tags")
+            "https://git.mon.k8b.co/api/v1/repos/${GITHUB_REPOSITORY}/tags")
           echo "Created tag ${TAG} -> HTTP ${HTTP}"
 
   # ---------------------------------------------------------------------------
@@ -141,8 +141,8 @@ jobs:
           git config --global init.defaultBranch main
           git init .
           git remote add origin \
-            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${{ GITHUB_REPOSITORY }}.git"
-          git fetch --depth=1 origin "${{ GITHUB_SHA }}"
+            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout FETCH_HEAD
 
       - name: Extract versions from tag
