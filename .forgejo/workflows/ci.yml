@@ -106,16 +106,32 @@ jobs:
             --format table \
             "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
 
-      - name: Auto-Tag Release
-        if: github.ref == 'refs/heads/main'
+  # ---------------------------------------------------------------------------
+  auto-tag:
+    name: Auto-Tag Release
+    runs-on: ubuntu-22.04
+    needs: [lint, build-test]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        env:
+          GITHUB_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          git config --global init.defaultBranch main
+          git init .
+          git remote add origin \
+            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout FETCH_HEAD
+
+      - name: Create release tag
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
           TOOL_VER=$(grep '^ARG TRIVY_VERSION=' Dockerfile | cut -d= -f2)
-          SHA8="${{ github.sha }}"
-          SHA8="${SHA8:0:8}"
+          SHA8="${GITHUB_SHA:0:8}"
           TAG="v${TOOL_VER}-${SHA8}"
-          PAYLOAD=$(printf '{"tag_name":"%s","target":"%s"}' "${TAG}" "${{ github.sha }}")
+          PAYLOAD=$(printf '{"tag_name":"%s","target":"%s"}' "${TAG}" "${GITHUB_SHA}")
           HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
             -H "Authorization: token ${FORGEJO_TOKEN}" \
             -H "Content-Type: application/json" \
