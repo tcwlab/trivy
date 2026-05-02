@@ -82,13 +82,12 @@ jobs:
 
       - name: Trivy Scan
         run: |
-          docker save "${{ env.IMAGE }}:test" \
-            | docker run --rm -i aquasec/trivy:0.70.0 image \
-                --input /dev/stdin \
-                --exit-code 0 \
-                --severity HIGH,CRITICAL \
-                --ignore-unfixed \
-                --format table
+          docker run --rm "${{ env.IMAGE }}:test" filesystem \
+            --exit-code 0 \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format table \
+            /
 
   # ---------------------------------------------------------------------------
   publish:
