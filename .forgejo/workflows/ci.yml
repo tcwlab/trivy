@@ -1,0 +1,132 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# chameleon-ci / trivy — Build & Publish
+#
+# Kein einziger Inline-Download. Alle Tools sind in spezialisierten,
+# versionierten Images vorinstalliert:
+#   tcwlab/hadolint:2.12.0  → Dockerfile-Linting
+#   tcwlab/buildx:0.33.0    → docker build / buildx (amd64 + arm64)
+#
+# Checkout: Shell-basiert (git init + git fetch) — kein Node.js nötig.
+# Docker-Daemon: Direkt über tcp://docker-in-docker:2375 (runner-net).
+#
+# Versionierung: Tag = Trivy-Version (z.B. v0.70.0)
+#   → tcwlab/trivy:0.70.0 + tcwlab/trivy:latest
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: ci
+
+on:
+  push:
+    branches: [main, "claude/*"]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: tcwlab/trivy
+  DOCKER_BUILDKIT: "1"
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Dockerfile Lint
+    runs-on: ubuntu-22.04
+    container:
+      image: tcwlab/hadolint:2.12.0
+    steps:
+      - name: Checkout
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git init .
+          git remote add origin \
+            "http://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout FETCH_HEAD
+
+      - name: hadolint
+        run: hadolint --ignore DL3018 Dockerfile
+
+  # ---------------------------------------------------------------------------
+  build-test:
+    name: Build & Smoke-Test (amd64)
+    runs-on: ubuntu-22.04
+    container:
+      image: tcwlab/buildx:0.33.0
+    env:
+      DOCKER_HOST: tcp://docker-in-docker:2375
+    steps:
+      - name: Checkout
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git init .
+          git remote add origin \
+            "http://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout FETCH_HEAD
+
+      - name: Build (amd64)
+        run: docker build -t "${{ env.IMAGE }}:test" .
+
+      - name: Smoke-Test
+        run: docker run --rm "${{ env.IMAGE }}:test" --version
+
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish to Docker Hub (linux/amd64 + linux/arm64)
+    runs-on: ubuntu-22.04
+    needs: [lint, build-test]
+    if: startsWith(github.ref, 'refs/tags/v')
+    container:
+      image: tcwlab/buildx:0.33.0
+    env:
+      DOCKER_HOST: tcp://docker-in-docker:2375
+    steps:
+      - name: Checkout
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          git init .
+          git remote add origin \
+            "http://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "${GITHUB_SHA}"
+          git checkout FETCH_HEAD
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VER="${GITHUB_REF#refs/tags/v}"
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (arm64 emulation)
+        run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+      - name: Set up Buildx builder
+        run: |
+          docker buildx create --name multiarch --driver docker-container --use
+          docker buildx inspect --bootstrap
+
+      - name: Docker Hub Login
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" \
+            | docker login --username "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Build & Push (multi-arch)
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --sbom=true \
+            --provenance=mode=max \
+            --build-arg TRIVY_VERSION="${VER}" \
+            -t "${{ env.IMAGE }}:latest" \
+            -t "${{ env.IMAGE }}:${VER}" \
+            --push \
+            .
