@@ -19,7 +19,7 @@ name: ci
 
 on:
   push:
-    branches: [main, "claude/*"]
+    branches: [main, "feature/*", "claude/*"]
     tags: ["v*-*"]
   pull_request:
     branches: [main]
@@ -87,30 +87,152 @@ jobs:
           echo "${{ secrets.DOCKERHUB_TOKEN }}" \
             | docker login --username "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Push to staging
+      - name: Push zu Staging
         run: |
           TOOL=$(echo "${{ env.IMAGE }}" | cut -d'/' -f2)
           docker tag "${{ env.IMAGE }}:test" "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
           docker push "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
 
-      - name: Trivy Scan
+  # ---------------------------------------------------------------------------
+  security:
+    name: Trivy Security Scan
+    runs-on: ubuntu-22.04
+    needs: [build-test]
+    env:
+      DOCKER_HOST: tcp://docker-in-docker:2375
+    steps:
+      - name: Install Docker CLI
+        run: |
+          curl -fsSL \
+            "https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz" \
+            -o /tmp/docker.tgz
+          tar xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker
+
+      - name: Trivy Scan (JSON)
         run: |
           TOOL=$(echo "${{ env.IMAGE }}" | cut -d'/' -f2)
           docker run --rm \
             -e TRIVY_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}" \
             -e TRIVY_PASSWORD="${{ secrets.DOCKERHUB_TOKEN }}" \
             tcwlab/trivy:0.70.0 image \
-            --exit-code 0 \
-            --severity HIGH,CRITICAL \
-            --ignore-unfixed \
-            --format table \
-            "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
+            --exit-code 0 --severity HIGH,CRITICAL --ignore-unfixed \
+            --format json \
+            "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}" \
+            > /tmp/trivy-report.json
+
+      - name: PR-Beschreibung mit Trivy-Ergebnis aktualisieren
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+          REPO: ${{ github.repository }}
+          IMAGE_REF: "tcwlab/forgejo-build:trivy-${{ github.sha }}"
+        run: |
+          python3 << 'EOF'
+          import os, json, re, urllib.request, urllib.error
+          from datetime import datetime, timezone
+
+          token    = os.environ["FORGEJO_TOKEN"]
+          repo     = os.environ["REPO"]
+          event    = os.environ["GITHUB_EVENT_NAME"]
+          base_url = "https://git.mon.k8b.co/api/v1"
+          headers  = {"Authorization": f"token {token}", "Content-Type": "application/json"}
+
+          def api_get(url):
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          def api_patch(url, body):
+              req = urllib.request.Request(
+                  url, data=json.dumps(body).encode(), headers=headers, method="PATCH"
+              )
+              with urllib.request.urlopen(req) as r:
+                  return r.status
+
+          pr_number = None
+          if event == "pull_request":
+              pr_number = os.environ["PR_NUMBER"]
+          else:
+              branch = os.environ["HEAD_BRANCH"]
+              try:
+                  pulls = api_get(f"{base_url}/repos/{repo}/pulls?state=open&limit=50")
+                  for pr in pulls:
+                      if pr.get("head", {}).get("ref") == branch:
+                          pr_number = str(pr["number"])
+                          break
+              except urllib.error.URLError as e:
+                  print(f"PR-Suche fehlgeschlagen: {e}")
+
+          if not pr_number:
+              print("Kein offener PR gefunden — PR-Beschreibung wird nicht aktualisiert")
+              exit(0)
+
+          with open("/tmp/trivy-report.json") as f:
+              report = json.load(f)
+
+          severity_icon = {"CRITICAL": "\U0001f534", "HIGH": "\U0001f7e0"}
+          rows = []
+          for result in report.get("Results", []):
+              for vuln in result.get("Vulnerabilities") or []:
+                  sev   = vuln.get("Severity", "")
+                  pkg   = vuln.get("PkgName", "")
+                  inst  = vuln.get("InstalledVersion", "")
+                  fixed = vuln.get("FixedVersion", "") or "—"
+                  cve   = vuln.get("VulnerabilityID", "")
+                  url   = next(
+                      (r for r in vuln.get("References", []) if "nvd.nist.gov" in r),
+                      vuln.get("PrimaryURL", "")
+                  )
+                  cve_link = f"[{cve}]({url})" if url else cve
+                  rows.append((sev, severity_icon.get(sev, "⚪"), pkg, inst, fixed, cve_link))
+
+          order = {"CRITICAL": 0, "HIGH": 1}
+          rows.sort(key=lambda r: (order.get(r[0], 9), r[2]))
+          counts = {s: sum(1 for r in rows if r[0] == s) for s in ["CRITICAL", "HIGH"]}
+          total  = sum(counts.values())
+
+          if total == 0:
+              summary = "**✅ Keine HIGH/CRITICAL Schwachstellen gefunden**"
+              table   = ""
+          else:
+              parts   = [f"{counts[s]} {s}" for s in ["CRITICAL", "HIGH"] if counts[s]]
+              summary = f"**⚠️ Security Scan — {', '.join(parts)}** (nur behebbare Schwachstellen)"
+              table   = (
+                  "\n| Severity | Package | Installed | Fixed | CVE |\n"
+                  "|---|---|---|---|---|\n"
+              )
+              for _, icon, pkg, inst, fixed, cve_link in rows:
+                  table += f"| {icon} | `{pkg}` | {inst} | {fixed} | {cve_link} |\n"
+
+          scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+          footer    = f"\n_Scan: `{os.environ['IMAGE_REF']}` — {scan_date}_"
+
+          start = "<!-- trivy-scan-chameleon-ci-start -->"
+          end   = "<!-- trivy-scan-chameleon-ci-end -->"
+          block = f"{start}\n{summary}{table}{footer}\n{end}"
+
+          pr_data      = api_get(f"{base_url}/repos/{repo}/pulls/{pr_number}")
+          current_body = pr_data.get("body", "") or ""
+
+          if start in current_body:
+              new_body = re.sub(
+                  re.escape(start) + r".*?" + re.escape(end),
+                  block, current_body, flags=re.DOTALL
+              )
+          else:
+              new_body = block + ("\n\n" + current_body if current_body else "")
+
+          status = api_patch(f"{base_url}/repos/{repo}/pulls/{pr_number}", {"body": new_body})
+          print(f"PR #{pr_number}: Beschreibung aktualisiert ({total} Findings, HTTP {status})")
+          EOF
 
   # ---------------------------------------------------------------------------
   auto-tag:
     name: Auto-Tag Release
     runs-on: ubuntu-22.04
-    needs: [lint, build-test]
+    needs: [lint, security]
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
@@ -143,7 +265,7 @@ jobs:
   publish:
     name: Publish to Docker Hub (linux/amd64 + linux/arm64)
     runs-on: ubuntu-22.04
-    needs: [lint, build-test]
+    needs: [lint, security]
     if: startsWith(github.ref, 'refs/tags/v')
     container:
       image: tcwlab/buildx:0.33.0
@@ -164,7 +286,6 @@ jobs:
       - name: Extract versions from tag
         id: version
         run: |
-          # Tag format: v<tool-version>-<sha8>, e.g. v0.62.0-f83dc49e
           TAG="${GITHUB_REF#refs/tags/v}"
           TOOL_VER="${TAG%-*}"
           SHA="${TAG##*-}"
