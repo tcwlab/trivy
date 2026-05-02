@@ -128,7 +128,7 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
         run: |
-          TOOL_VER=$(grep '^ARG TRIVY_VERSION=' Dockerfile | cut -d= -f2)
+          TOOL_VER=$(grep '^ARG TRIVY_VERSION=' Dockerfile | head -1 | cut -d= -f2)
           SHA8="${GITHUB_SHA:0:8}"
           TAG="v${TOOL_VER}-${SHA8}"
           PAYLOAD=$(printf '{"tag_name":"%s","target":"%s"}' "${TAG}" "${GITHUB_SHA}")
