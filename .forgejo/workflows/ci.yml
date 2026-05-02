@@ -80,14 +80,26 @@ jobs:
       - name: Smoke-Test
         run: docker run --rm "${{ env.IMAGE }}:test" --version
 
+      - name: Docker Hub Login
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" \
+            | docker login --username "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Push to staging
+        run: |
+          TOOL=$(echo "${{ env.IMAGE }}" | cut -d'/' -f2)
+          docker tag "${{ env.IMAGE }}:test" "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
+          docker push "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
+
       - name: Trivy Scan
         run: |
-          docker run --rm "${{ env.IMAGE }}:test" filesystem \
+          TOOL=$(echo "${{ env.IMAGE }}" | cut -d'/' -f2)
+          docker run --rm tcwlab/trivy:0.70.0 image \
             --exit-code 0 \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --format table \
-            /
+            "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
 
   # ---------------------------------------------------------------------------
   publish:
