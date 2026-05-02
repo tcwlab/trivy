@@ -9,8 +9,10 @@
 # Checkout: Shell-basiert (git init + git fetch) — kein Node.js nötig.
 # Docker-Daemon: Direkt über tcp://docker-in-docker:2375 (runner-net).
 #
-# Versionierung: Tag = Trivy-Version (z.B. v0.70.0)
-#   → tcwlab/trivy:0.70.0 + tcwlab/trivy:latest
+# Versionierung: Tag = <tool-version>-<sha8>  (z.B. v0.62.0-f83dc49e)
+#   → tcwlab/trivy:<version>-<sha8>  immutable
+#   → tcwlab/trivy:<version>          float
+#   → tcwlab/trivy:latest             float
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: ci
@@ -18,7 +20,7 @@ name: ci
 on:
   push:
     branches: [main, "claude/*"]
-    tags: ["v*.*.*"]
+    tags: ["v*.*.*-*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -47,8 +49,8 @@ jobs:
           git config --global init.defaultBranch main
           git init .
           git remote add origin \
-            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "${GITHUB_SHA}"
+            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${{ GITHUB_REPOSITORY }}.git"
+          git fetch --depth=1 origin "${{ GITHUB_SHA }}"
           git checkout FETCH_HEAD
 
       - name: hadolint
@@ -70,8 +72,8 @@ jobs:
           git config --global init.defaultBranch main
           git init .
           git remote add origin \
-            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "${GITHUB_SHA}"
+            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${{ GITHUB_REPOSITORY }}.git"
+          git fetch --depth=1 origin "${{ GITHUB_SHA }}"
           git checkout FETCH_HEAD
 
       - name: Build (amd64)
@@ -104,6 +106,23 @@ jobs:
             --format table \
             "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
 
+      - name: Auto-Tag Release
+        if: github.ref == 'refs/heads/main'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          TOOL_VER=$(grep '^ARG TRIVY_VERSION=' Dockerfile | cut -d= -f2)
+          SHA8="${{ github.sha }}"
+          SHA8="${SHA8:0:8}"
+          TAG="v${TOOL_VER}-${SHA8}"
+          PAYLOAD=$(printf '{"tag_name":"%s","target":"%s"}' "${TAG}" "${{ github.sha }}")
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" \
+            "https://git.mon.k8b.co/api/v1/repos/${{ GITHUB_REPOSITORY }}/tags")
+          echo "Created tag ${TAG} -> HTTP ${HTTP}"
+
   # ---------------------------------------------------------------------------
   publish:
     name: Publish to Docker Hub (linux/amd64 + linux/arm64)
@@ -122,15 +141,19 @@ jobs:
           git config --global init.defaultBranch main
           git init .
           git remote add origin \
-            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "${GITHUB_SHA}"
+            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${{ GITHUB_REPOSITORY }}.git"
+          git fetch --depth=1 origin "${{ GITHUB_SHA }}"
           git checkout FETCH_HEAD
 
-      - name: Extract version from tag
+      - name: Extract versions from tag
         id: version
         run: |
-          VER="${GITHUB_REF#refs/tags/v}"
-          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          # Tag format: v<tool-version>-<sha8>, e.g. v0.62.0-f83dc49e
+          TAG="${GITHUB_REF#refs/tags/v}"
+          TOOL_VER="${TAG%-*}"
+          SHA="${TAG##*-}"
+          echo "tool_version=${TOOL_VER}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU (arm64 emulation)
         run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
@@ -147,13 +170,15 @@ jobs:
 
       - name: Build & Push (multi-arch)
         run: |
-          VER="${{ steps.version.outputs.version }}"
+          VER="${{ steps.version.outputs.tool_version }}"
+          SHA="${{ steps.version.outputs.sha }}"
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --sbom=true \
             --provenance=mode=max \
             --build-arg TRIVY_VERSION="${VER}" \
-            -t "${{ env.IMAGE }}:latest" \
+            -t "${{ env.IMAGE }}:${VER}-${SHA}" \
             -t "${{ env.IMAGE }}:${VER}" \
+            -t "${{ env.IMAGE }}:latest" \
             --push \
             .
