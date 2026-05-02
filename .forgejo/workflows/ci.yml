@@ -94,7 +94,10 @@ jobs:
       - name: Trivy Scan
         run: |
           TOOL=$(echo "${{ env.IMAGE }}" | cut -d'/' -f2)
-          docker run --rm tcwlab/trivy:0.70.0 image \
+          docker run --rm \
+            -e TRIVY_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}" \
+            -e TRIVY_PASSWORD="${{ secrets.DOCKERHUB_TOKEN }}" \
+            tcwlab/trivy:0.70.0 image \
             --exit-code 0 \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
