@@ -1,15 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # chameleon-ci / trivy — Build & Publish
 #
-# Kein einziger Inline-Download. Alle Tools sind in spezialisierten,
+# Kein einziger Inline-Download in lint/build-test. Tools sind in
 # versionierten Images vorinstalliert:
 #   tcwlab/hadolint:2.12.0  → Dockerfile-Linting
-#   tcwlab/buildx:0.33.0    → docker build / buildx (amd64 + arm64)
+#   tcwlab/buildx:0.33.0    → docker build (amd64 Smoke-Test)
 #
-# Checkout: Shell-basiert (git init + git fetch) — kein Node.js nötig.
-# Docker-Daemon: Direkt über tcp://docker-in-docker:2375 (runner-net).
-#
-# Versionierung: Tag = <tool-version>-<sha8>  (z.B. v0.62.0-f83dc49e)
+# Release-Job: ubuntu-22.04, Docker CLI + buildx inline, DinD via runner-net.
+# Versionierung: <tool-version>-<sha8>  (z.B. 0.62.0-f83dc49e)
 #   → tcwlab/trivy:<version>-<sha8>  immutable
 #   → tcwlab/trivy:<version>          float
 #   → tcwlab/trivy:latest             float
@@ -20,7 +18,6 @@ name: ci
 on:
   push:
     branches: [main, "claude/*"]
-    tags: ["v*-*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -107,46 +104,11 @@ jobs:
             "tcwlab/forgejo-build:${TOOL}-${{ github.sha }}"
 
   # ---------------------------------------------------------------------------
-  auto-tag:
-    name: Auto-Tag Release
+  release:
+    name: Release — Multi-Arch Push + Git-Tag
     runs-on: ubuntu-22.04
     needs: [lint, build-test]
     if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Checkout
-        env:
-          GITHUB_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-        run: |
-          git config --global init.defaultBranch main
-          git init .
-          git remote add origin \
-            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "${GITHUB_SHA}"
-          git checkout FETCH_HEAD
-
-      - name: Create release tag
-        env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-        run: |
-          TOOL_VER=$(grep '^ARG TRIVY_VERSION=' Dockerfile | head -1 | cut -d= -f2)
-          SHA8="${GITHUB_SHA:0:8}"
-          TAG="v${TOOL_VER}-${SHA8}"
-          PAYLOAD=$(printf '{"tag_name":"%s","target":"%s"}' "${TAG}" "${GITHUB_SHA}")
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -H "Authorization: token ${FORGEJO_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "${PAYLOAD}" \
-            "https://git.mon.k8b.co/api/v1/repos/${GITHUB_REPOSITORY}/tags")
-          echo "Created tag ${TAG} -> HTTP ${HTTP}"
-
-  # ---------------------------------------------------------------------------
-  publish:
-    name: Publish to Docker Hub (linux/amd64 + linux/arm64)
-    runs-on: ubuntu-22.04
-    needs: [lint, build-test]
-    if: startsWith(github.ref, 'refs/tags/v')
-    container:
-      image: tcwlab/buildx:0.33.0
     env:
       DOCKER_HOST: tcp://docker-in-docker:2375
     steps:
@@ -161,15 +123,23 @@ jobs:
           git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout FETCH_HEAD
 
-      - name: Extract versions from tag
+      - name: Extract version
         id: version
         run: |
-          # Tag format: v<tool-version>-<sha8>, e.g. v0.62.0-f83dc49e
-          TAG="${GITHUB_REF#refs/tags/v}"
-          TOOL_VER="${TAG%-*}"
-          SHA="${TAG##*-}"
-          echo "tool_version=${TOOL_VER}" >> "$GITHUB_OUTPUT"
-          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          VER=$(grep '^ARG TRIVY_VERSION=' Dockerfile | head -1 | cut -d= -f2)
+          SHA8="${GITHUB_SHA:0:8}"
+          echo "tool_version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "sha8=${SHA8}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${{ env.IMAGE }}:${VER}-${SHA8}"
+
+      - name: Install Docker CLI + buildx
+        run: |
+          curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-27.3.1.tgz" -o /tmp/docker.tgz
+          tar xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin docker/docker
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL "https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-amd64" -o ~/.docker/cli-plugins/docker-buildx
+          chmod +x ~/.docker/cli-plugins/docker-buildx
+          docker buildx version
 
       - name: Set up QEMU (arm64 emulation)
         run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
@@ -187,14 +157,29 @@ jobs:
       - name: Build & Push (multi-arch)
         run: |
           VER="${{ steps.version.outputs.tool_version }}"
-          SHA="${{ steps.version.outputs.sha }}"
+          SHA8="${{ steps.version.outputs.sha8 }}"
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --sbom=true \
             --provenance=mode=max \
             --build-arg TRIVY_VERSION="${VER}" \
-            -t "${{ env.IMAGE }}:${VER}-${SHA}" \
+            -t "${{ env.IMAGE }}:${VER}-${SHA8}" \
             -t "${{ env.IMAGE }}:${VER}" \
             -t "${{ env.IMAGE }}:latest" \
             --push \
             .
+
+      - name: Create Git-Tag
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          VER="${{ steps.version.outputs.tool_version }}"
+          SHA8="${{ steps.version.outputs.sha8 }}"
+          TAG="v${VER}-${SHA8}"
+          PAYLOAD=$(printf '{"tag_name":"%s","target":"%s"}' "${TAG}" "${GITHUB_SHA}")
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" \
+            "https://git.mon.k8b.co/api/v1/repos/${GITHUB_REPOSITORY}/tags")
+          echo "Git-Tag ${TAG} -> HTTP ${HTTP}"
