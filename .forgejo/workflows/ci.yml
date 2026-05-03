@@ -37,7 +37,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   lint:
-    name: Dockerfile Lint
+    name: Lint
     runs-on: ubuntu-22.04
     container:
       image: tcwlab/betterlint:latest
@@ -53,9 +53,98 @@ jobs:
           git fetch --depth=1 origin "${GITHUB_SHA}"
           git checkout FETCH_HEAD
 
-      - name: hadolint
-        run: betterlint --only hadolint
+      - name: Run betterlint
+        run: |
+          set +e
+          betterlint --dir . --markdown 2>&1 | tee /tmp/betterlint-report.md
+          LINT_EXIT="${PIPESTATUS[0]}"
+          exit "${LINT_EXIT}"
 
+      - name: Betterlint-Ergebnis als PR-Kommentar
+        if: always()
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+          REPO: ${{ github.repository }}
+          IMAGE_REF: "tcwlab/betterlint:latest"
+        run: |
+          python3 << 'EOF'
+          import os, json, urllib.request, urllib.error
+          from datetime import datetime, timezone
+
+          MARKER  = "<!-- betterlint-report -->"
+          token   = os.environ["FORGEJO_TOKEN"]
+          repo    = os.environ["REPO"]
+          event   = os.environ["GITHUB_EVENT_NAME"]
+          api     = "https://git.mon.k8b.co/api/v1"
+          hdrs    = {"Authorization": f"token {token}", "Content-Type": "application/json"}
+
+          def get(url):
+              req = urllib.request.Request(url, headers=hdrs)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          def post(url, body):
+              req = urllib.request.Request(
+                  url, data=json.dumps(body).encode(), headers=hdrs, method="POST")
+              with urllib.request.urlopen(req) as r:
+                  return r.status
+
+          def patch(url, body):
+              req = urllib.request.Request(
+                  url, data=json.dumps(body).encode(), headers=hdrs, method="PATCH")
+              with urllib.request.urlopen(req) as r:
+                  return r.status
+
+          pr_number = None
+          if event == "pull_request":
+              pr_number = os.environ["PR_NUMBER"]
+          else:
+              branch = os.environ["HEAD_BRANCH"]
+              try:
+                  for pr in get(f"{api}/repos/{repo}/pulls?state=open&limit=50"):
+                      if pr.get("head", {}).get("ref") == branch:
+                          pr_number = str(pr["number"])
+                          break
+              except urllib.error.URLError as e:
+                  print(f"PR-Suche fehlgeschlagen: {e}")
+
+          if not pr_number:
+              print("Kein offener PR — Kommentar wird nicht gepostet")
+              raise SystemExit(0)
+
+          try:
+              with open("/tmp/betterlint-report.md") as f:
+                  report = f.read().strip()
+          except FileNotFoundError:
+              report = "**⚠️ betterlint-Report nicht gefunden**"
+
+          scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+          comment   = f"{MARKER}\n{report}\n\n_Scan: `{os.environ['IMAGE_REF']}` — {scan_date}_"
+
+          existing_id = None
+          page = 1
+          while True:
+              comments = get(f"{api}/repos/{repo}/issues/{pr_number}/comments?limit=50&page={page}")
+              if not comments:
+                  break
+              for c in comments:
+                  if MARKER in (c.get("body") or ""):
+                      existing_id = c["id"]
+                      break
+              if existing_id or len(comments) < 50:
+                  break
+              page += 1
+
+          if existing_id:
+              status = patch(f"{api}/repos/{repo}/issues/comments/{existing_id}", {"body": comment})
+              print(f"PR #{pr_number}: Betterlint-Kommentar aktualisiert (HTTP {status})")
+          else:
+              status = post(f"{api}/repos/{repo}/issues/{pr_number}/comments", {"body": comment})
+              print(f"PR #{pr_number}: Betterlint-Kommentar erstellt (HTTP {status})")
+          EOF
   # ---------------------------------------------------------------------------
   build-test:
     name: Build & Smoke-Test (amd64)
