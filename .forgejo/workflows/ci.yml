@@ -122,10 +122,7 @@ jobs:
               report = "**⚠️ betterlint-Report nicht gefunden**"
 
           scan_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-          comment   = f"{MARKER}
-{report}
-
-_Scan: `{os.environ['IMAGE_REF']}` — {scan_date}_"
+          comment   = f"{MARKER}\n{report}\n\n_Scan: `{os.environ['IMAGE_REF']}` — {scan_date}_"
 
           existing_id = None
           page = 1
