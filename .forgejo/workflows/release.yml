@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# chameleon-ci / trivy — Semantic Release
+#
+# Läuft nur auf main. Analysiert Conventional Commits seit dem letzten Tag
+# und erstellt bei Bedarf einen neuen Git-Tag (z.B. v1.2.0). Der ci.yml-
+# publish-Job greift den Tag auf und baut das Docker-Image.
+#
+# Benötigte Secrets: keine extra — FORGEJO_TOKEN wird automatisch gesetzt.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.FORGEJO_TOKEN }}
+
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          GIT_AUTHOR_NAME: "Sascha Willomitzer"
+          GIT_AUTHOR_EMAIL: "swi@thechameleonway.com"
+          GIT_COMMITTER_NAME: "Sascha Willomitzer"
+          GIT_COMMITTER_EMAIL: "swi@thechameleonway.com"
+        run: |
+          npm install --no-save \
+            semantic-release@24 \
+            "@semantic-release/commit-analyzer@13" \
+            "@semantic-release/release-notes-generator@14" \
+            "@semantic-release/git@10"
+          npx semantic-release

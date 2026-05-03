@@ -3,16 +3,16 @@
 #
 # Kein einziger Inline-Download. Alle Tools sind in spezialisierten,
 # versionierten Images vorinstalliert:
-#   tcwlab/hadolint:2.12.0  → Dockerfile-Linting
+#   tcwlab/betterlint:latest → Dockerfile-Linting
 #   tcwlab/buildx:0.33.0    → docker build / buildx (amd64 + arm64)
 #
 # Checkout: Shell-basiert (git init + git fetch) — kein Node.js nötig.
 # Docker-Daemon: Direkt über tcp://docker-in-docker:2375 (runner-net).
 #
-# Versionierung: Tag = <tool-version>-<sha8>  (z.B. v0.62.0-f83dc49e)
-#   → tcwlab/trivy:<version>-<sha8>  immutable
-#   → tcwlab/trivy:<version>          float
-#   → tcwlab/trivy:latest             float
+# Versionierung: Semantic Release (v*.*.*) via release.yml
+#   → tcwlab/trivy:<tool-version>-<semver>  immutable  (z.B. 0.70.0-1.2.3)
+#   → tcwlab/trivy:<tool-version>            float      (z.B. 0.70.0)
+#   → tcwlab/trivy:latest                    float
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: ci
@@ -20,7 +20,7 @@ name: ci
 on:
   push:
     branches: [main, "feature/*", "claude/*"]
-    tags: ["v*-*"]
+    tags: ["v*.*.*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -40,7 +40,7 @@ jobs:
     name: Dockerfile Lint
     runs-on: ubuntu-22.04
     container:
-      image: tcwlab/hadolint:2.12.0
+      image: tcwlab/betterlint:latest
     steps:
       - name: Checkout
         env:
@@ -54,7 +54,7 @@ jobs:
           git checkout FETCH_HEAD
 
       - name: hadolint
-        run: hadolint --ignore DL3018 Dockerfile
+        run: betterlint --only hadolint
 
   # ---------------------------------------------------------------------------
   build-test:
@@ -229,39 +229,6 @@ jobs:
           EOF
 
   # ---------------------------------------------------------------------------
-  auto-tag:
-    name: Auto-Tag Release
-    runs-on: ubuntu-22.04
-    needs: [lint, security]
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Checkout
-        env:
-          GITHUB_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-        run: |
-          git config --global init.defaultBranch main
-          git init .
-          git remote add origin \
-            "https://oauth2:${GITHUB_TOKEN}@git.mon.k8b.co/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "${GITHUB_SHA}"
-          git checkout FETCH_HEAD
-
-      - name: Create release tag
-        env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-        run: |
-          TOOL_VER=$(grep '^ARG TRIVY_VERSION=' Dockerfile | head -1 | cut -d= -f2)
-          SHA8="${GITHUB_SHA:0:8}"
-          TAG="v${TOOL_VER}-${SHA8}"
-          PAYLOAD=$(printf '{"tag_name":"%s","target":"%s"}' "${TAG}" "${GITHUB_SHA}")
-          HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -H "Authorization: token ${FORGEJO_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "${PAYLOAD}" \
-            "https://git.mon.k8b.co/api/v1/repos/${GITHUB_REPOSITORY}/tags")
-          echo "Created tag ${TAG} -> HTTP ${HTTP}"
-
-  # ---------------------------------------------------------------------------
   publish:
     name: Publish to Docker Hub (linux/amd64 + linux/arm64)
     runs-on: ubuntu-22.04
@@ -286,11 +253,10 @@ jobs:
       - name: Extract versions from tag
         id: version
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
-          TOOL_VER="${TAG%-*}"
-          SHA="${TAG##*-}"
+          SEMVER="${GITHUB_REF#refs/tags/v}"
+          TOOL_VER=$(grep '^ARG TRIVY_VERSION=' Dockerfile | head -1 | cut -d= -f2)
+          echo "semver=${SEMVER}"         >> "$GITHUB_OUTPUT"
           echo "tool_version=${TOOL_VER}" >> "$GITHUB_OUTPUT"
-          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU (arm64 emulation)
         run: docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
@@ -307,15 +273,15 @@ jobs:
 
       - name: Build & Push (multi-arch)
         run: |
-          VER="${{ steps.version.outputs.tool_version }}"
-          SHA="${{ steps.version.outputs.sha }}"
+          SEMVER="${{ steps.version.outputs.semver }}"
+          TOOL_VER="${{ steps.version.outputs.tool_version }}"
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --sbom=true \
             --provenance=mode=max \
-            --build-arg TRIVY_VERSION="${VER}" \
-            -t "${{ env.IMAGE }}:${VER}-${SHA}" \
-            -t "${{ env.IMAGE }}:${VER}" \
+            --build-arg TRIVY_VERSION="${TOOL_VER}" \
+            -t "${{ env.IMAGE }}:${TOOL_VER}-${SEMVER}" \
+            -t "${{ env.IMAGE }}:${TOOL_VER}" \
             -t "${{ env.IMAGE }}:latest" \
             --push \
             .

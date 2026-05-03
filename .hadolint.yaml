@@ -1,0 +1,8 @@
+# hadolint-Konfiguration für chameleon-ci/trivy
+#
+# DL3018: Pin versions in apk add
+# Alpine-Images pinnen bewusst keine apk-Paketversionen, da sie das
+# Alpine-Repository als Source-of-Truth verwenden und nur mit apk upgrade
+# aktualisiert werden. Version-Pinning würde bei Alpine-Releases brechen.
+ignore:
+  - DL3018
