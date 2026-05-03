@@ -3,6 +3,9 @@
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
+    ["@saithodev/semantic-release-gitea", {
+      "giteaUrl": "https://git.mon.k8b.co"
+    }],
     "@semantic-release/git"
   ]
 }
