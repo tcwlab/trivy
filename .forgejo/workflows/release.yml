@@ -1,17 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# chameleon-ci / trivy — Semantic Release
+# tcwlab / trivy — Semantic Release
 #
-# Läuft nur auf main. Analysiert Conventional Commits seit dem letzten Tag,
-# erstellt einen Forgejo-Release (mit Changelog) und dispatcht ci.yml für
-# den neuen Tag, damit der Publish-Job auf Docker Hub läuft.
+# Runs on main only. Analyzes Conventional Commits since the last tag,
+# creates a Forgejo Release (with changelog), and dispatches ci.yml for
+# the new tag so the Publish job runs on Docker Hub.
 #
 # Plugins:
-#   @semantic-release/commit-analyzer        → Release-Typ ermitteln
-#   @semantic-release/release-notes-generator → Changelog generieren
-#   @saithodev/semantic-release-gitea         → Forgejo Release erstellen
-#   @semantic-release/git                     → Git-Tag pushen
+#   @semantic-release/commit-analyzer        → determine release type
+#   @semantic-release/release-notes-generator → generate changelog
+#   @saithodev/semantic-release-gitea         → create Forgejo release
+#   @semantic-release/git                     → push Git tag
 #
-# Benötigte Secrets: FORGEJO_TOKEN (User-PAT mit repo + workflow Rechten)
+# Required secrets: FORGEJO_TOKEN (user PAT with repo + workflow permissions)
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: release
@@ -38,7 +38,7 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.FORGEJO_TOKEN }}
 
-      - name: Tag vor Release merken
+      - name: Remember tag before release
         id: before
         run: |
           TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
@@ -62,13 +62,13 @@ jobs:
             "@semantic-release/git@10"
           npx semantic-release
 
-      - name: Neuen Tag ermitteln
+      - name: Determine new tag
         id: after
         run: |
           TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Publish-Job via workflow_dispatch auslösen
+      - name: Trigger publish job via workflow_dispatch
         if: steps.after.outputs.tag != steps.before.outputs.tag && steps.after.outputs.tag != ''
         env:
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
@@ -91,8 +91,8 @@ jobs:
           )
           try:
               with urllib.request.urlopen(req) as r:
-                  print(f"workflow_dispatch für {new_tag} ausgelöst (HTTP {r.status})")
+                  print(f"workflow_dispatch for {new_tag} triggered (HTTP {r.status})")
           except urllib.error.HTTPError as e:
-              print(f"Fehler beim Dispatchen: {e.code} {e.read().decode()}")
+              print(f"Error dispatching: {e.code} {e.read().decode()}")
               raise SystemExit(1)
           EOF

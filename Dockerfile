@@ -1,10 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # tcwlab/trivy
 #
-# Minimales Alpine-Image mit gepinnter Trivy-Version.
-# Der Image-Tag entspricht der Trivy-Version: tcwlab/trivy:0.70.0
+# Minimal Alpine image with pinned Trivy version.
+# Image tag matches Trivy version: tcwlab/trivy:0.70.0
 #
-# Unterstützte Plattformen: linux/amd64, linux/arm64
+# Supported platforms: linux/amd64, linux/arm64
 #
 # Build (multi-arch):
 #   docker buildx build --platform linux/amd64,linux/arm64 \
@@ -51,7 +51,7 @@ LABEL org.opencontainers.image.title="trivy" \
       org.opencontainers.image.description="trivy — pinned version for reproducible CI scanning" \
       org.opencontainers.image.vendor="The Chameleon Way" \
       org.opencontainers.image.url="https://hub.docker.com/r/tcwlab/trivy" \
-      org.opencontainers.image.source="https://git.mon.k8b.co/chameleon-ci/trivy" \
+      org.opencontainers.image.source="https://github.com/tcwlab/trivy" \
       org.opencontainers.image.version="${TRIVY_VERSION}"
 
 # hadolint ignore=DL3018

@@ -1,0 +1,15 @@
+# Build artifacts
+node_modules/
+.cache/
+*.log
+*.tmp
+.DS_Store
+
+# Local development
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
